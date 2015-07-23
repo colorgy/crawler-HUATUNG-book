@@ -1,8 +1,9 @@
 require 'iconv'
 require 'crawler_rocks'
 require 'json'
-require 'isbn'
 require 'pry'
+
+require 'book_toolkit'
 
 require 'thread'
 require 'thwait'
@@ -19,7 +20,10 @@ class HuatungBookCrawler
     "作者" => :author,
   }
 
-  def initialize
+  def initialize update_progress: nil, after_each: nil
+    @update_progress_proc = update_progress
+    @after_each_proc = after_each
+
     @index_url = "http://www.huatung.com/index.php"
   end
 
@@ -68,13 +72,14 @@ class HuatungBookCrawler
             external_image_url = basic_data && URI.join(@index_url, basic_data.xpath('a/img/@src').to_s).to_s
             name = basic_data.xpath('a')[0].children[2].text
             author = datas[1] && datas[1].text
-            price = datas[2] && datas[2].text.gsub(/[^\d]/, '').to_i
+            original_price = datas[2] && datas[2].text.gsub(/[^\d]/, '').to_i
 
             book[:url] = url
             book[:external_image_url] = external_image_url
             book[:name] = name
             book[:author] = author
-            book[:price] = price
+            book[:original_price] = original_price
+            book[:known_supplier] = 'huatung'
 
             # attr_datas = basic_data.xpath('a/jw').text.split("\n").map(&:strip).select{|s| !s.empty?}
             r = RestClient.get url
@@ -86,7 +91,15 @@ class HuatungBookCrawler
               key && book[key] = data.rpartition(/[:：]/)[-1]
             }
 
-            book[:isbn] = book[:isbn] && isbn_to_13(book[:isbn])
+            book[:invalid_isbn] = nil;
+            begin
+              book[:isbn] = BookToolkit.to_isbn13(book[:isbn])
+            rescue Exception => e
+              book[:invalid_isbn] = book[:isbn]
+              book[:isbn] = nil
+            end
+
+            @after_each_proc.call(book: book) if @after_each_proc
 
             @books << book
           end # end Thread do
@@ -102,38 +115,7 @@ class HuatungBookCrawler
 
     @books
   end
-
-  def isbn_to_13 isbn
-    case isbn.length
-    when 13
-      return ISBN.thirteen isbn
-    when 10
-      return ISBN.thirteen isbn
-    when 12
-      return "#{isbn}#{isbn_checksum(isbn)}"
-    when 9
-      return ISBN.thirteen("#{isbn}#{isbn_checksum(isbn)}")
-    end
-  end
-
-  def isbn_checksum(isbn)
-    isbn.gsub!(/[^(\d|X)]/, '')
-    c = 0
-    if isbn.length <= 10
-      10.downto(2) {|i| c += isbn[10-i].to_i * i}
-      c %= 11
-      c = 11 - c
-      c ='X' if c == 10
-      return c
-    elsif isbn.length <= 13
-      (1..11).step(2) {|i| c += isbn[i].to_i}
-      c *= 3
-      (0..11).step(2) {|i| c += isbn[i].to_i}
-      c = (220-c) % 10
-      return c
-    end
-  end
 end
 
-cc = HuatungBookCrawler.new
-File.write('huatung_books.json', JSON.pretty_generate(cc.books))
+# cc = HuatungBookCrawler.new
+# File.write('huatung_books.json', JSON.pretty_generate(cc.books))
